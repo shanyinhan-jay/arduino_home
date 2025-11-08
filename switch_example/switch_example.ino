@@ -8,6 +8,7 @@
 #include <ESP8266mDNS.h>
 #include <EEPROM.h>
 #include <PubSubClient.h>
+#include <Updater.h>
 
 // ======================= 基本配置 =======================
 #define NUM_CHANNELS 2
@@ -72,6 +73,9 @@ int buttonSampleLowCount = 0;
 int buttonSampleCounter  = 0;
 unsigned long lastSampleMs = 0;
 
+// OTA 状态：上传期间点亮紫色闪烁指示
+bool otaInProgress = false;
+
 // ======================= 模式状态 =======================
 bool curtainMode = false; // 窗帘互斥模式：打开一个通道时自动关闭对侧通道（0 与 最后一个）
 
@@ -102,6 +106,11 @@ const uint8_t CONN_RED_B = 0;
 const uint8_t CONN_BLUE_R = 0;
 const uint8_t CONN_BLUE_G = 0;
 const uint8_t CONN_BLUE_B = 255;
+
+// OTA 升级指示颜色（绛紫色）
+const uint8_t OTA_PURPLE_R = 150;
+const uint8_t OTA_PURPLE_G = 0;
+const uint8_t OTA_PURPLE_B = 120;
 
 
 // ======================= EEPROM 持久化 =======================
@@ -230,10 +239,11 @@ bool loadLedConfig() {
     for (size_t i = 0; i < sizeof(oldCfg.mqttUser); i++) sum += (uint8_t)oldCfg.mqttUser[i];
     for (size_t i = 0; i < sizeof(oldCfg.mqttPass); i++) sum += (uint8_t)oldCfg.mqttPass[i];
     uint16_t oldChecksum = (uint16_t)(sum & 0xFFFF);
+    // 即便旧版校验不匹配，仍尝试迁移可见配置以避免用户配置丢失
     if (oldChecksum != oldCfg.checksum) {
-      return false; // 校验失败，不迁移
+      Serial.printf("EEPROM v3 checksum mismatch stored=%u calc=%u, attempting soft-migrate...\n", oldCfg.checksum, oldChecksum);
     }
-    // 组装为新结构并写回 EEPROM
+    // 组装为新结构并写回 EEPROM（软迁移：尽可能保留旧值）
     LedConfig migrated;
     memset(&migrated, 0, sizeof(migrated));
     migrated.magic = EEPROM_MAGIC;
@@ -256,7 +266,7 @@ bool loadLedConfig() {
     gLedCfg = migrated;
     applyLedConfigToRuntime(gLedCfg);
     eepLoadOk = true;
-    Serial.println("EEPROM migrated v3->v4 and applied.");
+    Serial.println("EEPROM soft-migrated v3->v4 and applied.");
     return true;
   }
   eepLoadOk = false;
@@ -378,12 +388,39 @@ unsigned long lastBlinkMs = 0;
 bool blinkOn = false;
 const uint16_t FAST_BLINK_MS = 200;  // 快闪 200ms
 const uint16_t SLOW_BLINK_MS = 800;  // 慢闪 800ms
+const uint16_t OTA_BLINK_MS  = 300;  // OTA 紫色闪烁 300ms
 // WiFi 健康检查与 AP 回退
 unsigned long lastWiFiHealthCheckMs = 0;
 unsigned long wifiLostSinceMs = 0;
 const unsigned long WIFI_RETRY_WINDOW_MS = 15000; // 断线后尝试 15 秒，失败则开启 AP
 
 void renderConnectivityLed() {
+  // OTA 期间优先显示绛紫色闪烁指示（覆盖其它显示）
+  if (otaInProgress) {
+    unsigned long now = millis();
+    if (now - lastBlinkMs >= OTA_BLINK_MS) {
+      lastBlinkMs = now;
+      blinkOn = !blinkOn;
+
+      pixels.clear();
+      // OTA 指示不受用户亮度限制，直接使用绛紫色值
+      uint8_t r = OTA_PURPLE_R;
+      uint8_t g = OTA_PURPLE_G;
+      uint8_t b = OTA_PURPLE_B;
+
+      if (blinkOn) {
+        for (int i = 0; i < NUM_PIXELS; i++) {
+          pixels.setPixelColor(i, pixels.Color(r, g, b));
+        }
+      } else {
+        for (int i = 0; i < NUM_PIXELS; i++) {
+          pixels.setPixelColor(i, pixels.Color(0, 0, 0));
+        }
+      }
+      pixels.show();
+    }
+    return;
+  }
   // 仅在 MQTT 未连接时进行连接状态指示
   if (mqttClient.connected()) {
     return;
@@ -804,6 +841,9 @@ String buildHtml() {
   html += "<button onclick=\"setMqtt()\">保存MQTT</button><span class='ip'>保存后设备将重连 MQTT</span></div>";
   // 手动重发 HA 自动发现
   html += "<div class='row'><button onclick=\"sendHa()\">重发 HA 发现</button><span class='ip'>用于 Home Assistant 自动发现</span></div>";
+  // OTA 升级（上传固件 BIN 文件并自动重启）
+  html += "<div class='row'><label>OTA升级: <input type='file' id='otaFile' accept='.bin'></label>";
+  html += "<button style='margin-left:8px' onclick=\"doOta()\">开始升级</button><span class='ip'>选择编译生成的 .bin 固件文件</span></div>";
   // LED 打开颜色与亮度设置
   html += "<div class='row'><label>LED打开颜色: <input type='color' id='ledColor' onchange=\"setLed()\"></label>";
   html += "<label style='margin-left:12px'>亮度: <input type='range' id='ledBright' min='0' max='255' step='1' oninput=\"setLed()\"> <code id='ledBrightVal' class='ip'>0</code></label></div>";
@@ -840,6 +880,7 @@ String buildHtml() {
   html += "function setWifi(){var s=document.getElementById('cfgSsid').value;var p=document.getElementById('cfgPass').value;fetch('/api/wifi_config?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p)).then(()=>setTimeout(refresh,800));}";
   html += "function setDaytime(){var d=document.getElementById('cfgDaytime').value;fetch('/api/daytime?value='+encodeURIComponent(d)).then(()=>refresh());}";
   html += "function syncBrightness(){var b=document.getElementById('ledBright');var bv=document.getElementById('ledBrightVal');var ob=document.getElementById('ledOffBright');var obv=document.getElementById('ledOffBrightVal');if(b&&bv){bv.innerText=b.value;}if(ob&&obv){obv.innerText=ob.value;}}";
+  html += "function doOta(){var f=document.getElementById('otaFile').files[0];if(!f){alert('请选择固件文件(.bin)');return;}var fd=new FormData();fd.append('firmware',f,f.name);fetch('/api/ota',{method:'POST',body:fd}).then(r=>r.text()).then(t=>{try{var j=JSON.parse(t);alert(j.ok?'升级完成，设备将重启':'升级失败: '+(j.error||t));}catch(e){alert(t);}setTimeout(()=>refresh(),3000);}).catch(e=>alert('上传失败: '+e));}";
   html += "function refreshIllum(){fetch('/api/state').then(r=>r.json()).then(j=>{var ae=(document.activeElement&&document.activeElement.id)||'';var dd=document.getElementById('cfgDaytime');if(dd&&typeof j.daytime!=='undefined'&&ae!=='cfgDaytime'){dd.value=j.daytime;}var iv=document.getElementById('illumValue');if(iv){iv.innerText=(typeof j.illum!=='undefined'&&j.illum>=0)?j.illum:'未知';}var d=j.debug; if(d){var de=document.getElementById('dbgEepSize'); if(de) de.innerText=d.eepSize; var dc=document.getElementById('dbgCfgSize'); if(dc) dc.innerText=d.cfgSize; var dm=document.getElementById('dbgMagic'); if(dm) dm.innerText='0x'+(Number(d.magic).toString(16)).toUpperCase(); var dv=document.getElementById('dbgVer'); if(dv) dv.innerText=d.version; var ds=document.getElementById('dbgChk'); if(ds) ds.innerText=d.checksum; var dl=document.getElementById('dbgCalc'); if(dl) dl.innerText=d.calc; var dk=document.getElementById('dbgLoad'); if(dk) dk.innerText=d.loadOk?'OK':'FAIL';}});}";
   html += "setInterval(refreshIllum,2500);";
   html += "setInterval(refresh,2000);refresh();";
@@ -1162,6 +1203,8 @@ void setup() {
   server.on("/api/wifi_config", HTTP_GET, handleSetWifi);
   server.on("/api/mqtt_config", HTTP_GET, handleSetMqtt);
   server.on("/api/daytime", HTTP_GET, handleSetDaytime);
+  // OTA 上传：POST multipart/form-data，字段名称任意（取首个文件）
+  server.on("/api/ota", HTTP_POST, handleOtaDone, handleOtaUpload);
   server.onNotFound([](){ server.send(404, "text/plain", "Not Found"); });
   server.begin();
 
@@ -1290,5 +1333,46 @@ void maintainWiFiConnectivity() {
     WiFi.softAP(apSsid.c_str());
     apMode = true;
     Serial.print("AP started for setup, SSID: "); Serial.println(apSsid);
+  }
+}
+
+// ======================= OTA 上传处理 =======================
+void handleOtaUpload() {
+  HTTPUpload &upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    Serial.printf("OTA Start: %s\n", upload.filename.c_str());
+    otaInProgress = true; // 开始 OTA：启用紫色闪烁
+    // 立即渲染一次，确保用户能看到升级开始指示
+    renderConnectivityLed();
+    size_t sketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+    if (!Update.begin(sketchSpace)) {
+      Update.printError(Serial);
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+    // 上传写入阶段：周期性触发闪烁渲染，避免主循环阻塞导致不可见
+    renderConnectivityLed();
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      Serial.printf("OTA Success: %u bytes\n", upload.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+    // 结束阶段再渲染一次，保持闪烁直至 handleOtaDone 清理状态
+    renderConnectivityLed();
+  }
+  yield();
+}
+
+void handleOtaDone() {
+  bool ok = !Update.hasError();
+  otaInProgress = false; // 结束 OTA：关闭紫色闪烁
+  String resp = ok ? "{\"ok\":true,\"msg\":\"update success, rebooting\"}" : "{\"ok\":false,\"error\":\"update failed\"}";
+  server.send(200, "application/json", resp);
+  if (ok) {
+    delay(300);
+    ESP.restart();
   }
 }
