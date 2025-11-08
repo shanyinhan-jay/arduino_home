@@ -45,6 +45,9 @@ void computeMqttRootTopic();
 void handleGetCombos();
 void handleSaveCombo();
 void handleDeleteCombo();
+// 前置声明：脉宽范围夹紧函数在后文定义，这里先声明以便上方函数使用
+static inline int clampPulse(int us);
+void handleSetPulse();
 void publishHaComboDiscovery(const String &name);
 void publishHaDiscovery();
 void handlePublishHa();
@@ -134,6 +137,11 @@ void applyCfg(const ServoConfig &c){
   mqttPass = String(c.mqttPassArr);
   deviceName = String(c.devNameArr);
   deviceType = String(c.devTypeArr);
+  // 应用脉宽范围（若 EEPROM 中已有有效值）
+  if (c.minPulse && c.maxPulse && c.minPulse < c.maxPulse) {
+    minPulseUs = clampPulse((int)c.minPulse);
+    maxPulseUs = clampPulse((int)c.maxPulse);
+  }
   // 组合动作（版本>=2）
   comboCount = 0;
   if(c.version >= 2){
@@ -181,6 +189,9 @@ void saveCfg(){
   strncpy(gCfg.mqttPassArr, mqttPass.c_str(), sizeof(gCfg.mqttPassArr)-1);
   strncpy(gCfg.devNameArr, deviceName.c_str(), sizeof(gCfg.devNameArr)-1);
   strncpy(gCfg.devTypeArr, deviceType.c_str(), sizeof(gCfg.devTypeArr)-1);
+  // 保存当前脉宽范围
+  gCfg.minPulse = (uint16_t)clampPulse(minPulseUs);
+  gCfg.maxPulse = (uint16_t)clampPulse(maxPulseUs);
   gCfg.combosCount = comboCount > MAX_COMBOS ? MAX_COMBOS : comboCount;
   for(uint8_t i=0;i<gCfg.combosCount;i++){
     strncpy(gCfg.comboNames[i], comboNames[i].c_str(), COMBO_NAME_LEN-1);
@@ -411,7 +422,7 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
   function applyPulse(){
     const min = +minUsEl.value || 500;
     const max = +maxUsEl.value || 2500;
-    fetch('/api/pulse?min='+min+'&max='+max).then(()=>refresh()).catch(console.error);
+    fetch('/api/pulse?min='+min+'&max='+max, { method: 'POST' }).then(()=>refresh()).catch(console.error);
   }
   function saveDevice(){
     const n = encodeURIComponent(devNameEl.value||'');
@@ -620,6 +631,11 @@ void handleSweep(){
 }
 
 void handleGetPulse(){
+  // 兼容旧版前端：若通过 GET 传入 min/max 参数，则转为执行设置逻辑
+  if (server.hasArg("min") || server.hasArg("max")) {
+    handleSetPulse();
+    return;
+  }
   String j = String("{")+
     "\"min\":" + String(minPulseUs) + "," +
     "\"max\":" + String(maxPulseUs) +
@@ -645,6 +661,8 @@ void handleSetPulse(){
   delay(10);
   servo.attach(SERVO_PIN, minPulseUs, maxPulseUs);
   servo.write(angle);
+  // 持久化保存到 EEPROM
+  saveCfg();
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
@@ -665,6 +683,11 @@ void setup() {
   // EEPROM 与设备ID
   EEPROM.begin(SERVO_EEPROM_SIZE);
   loadCfg();
+  // 应用加载到的脉宽范围到舵机
+  servo.detach();
+  delay(10);
+  servo.attach(SERVO_PIN, minPulseUs, maxPulseUs);
+  servo.write(angle);
   computeId();
 
   // 优先连接 WiFi；失败则保留 AP 配网
