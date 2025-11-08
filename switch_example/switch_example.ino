@@ -466,7 +466,9 @@ void clearHaDiscovery();
 void computeMqttRootTopic() {
   deviceMacNoColon = WiFi.macAddress();
   deviceMacNoColon.replace(":", "");
-  mqttRootTopic = String("smarthome/") + deviceType + "/" + deviceName + "-" + deviceMacNoColon;
+  // 仅使用 MAC 后 6 位
+  String macLast6 = deviceMacNoColon.length() >= 6 ? deviceMacNoColon.substring(deviceMacNoColon.length() - 6) : deviceMacNoColon;
+  mqttRootTopic = String("smarthome/") + deviceType + "/" + deviceName + "-" + macLast6;
 }
 
 void mqttOnMessage(char* topic, byte* payload, unsigned int length) {

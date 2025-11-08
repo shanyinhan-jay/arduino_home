@@ -42,8 +42,8 @@
 - `GET /api/ha_discovery`：手动发布 Home Assistant 自动发现配置（推荐在 HA 中重新加载 MQTT 后调用）
 
 ## MQTT 主题结构
-- 根主题：`smarthome/<deviceType>/<deviceName>-<MAC_NO_COLON>`
-  - 示例：`smarthome/switch/esp-switch-5CCF7F02E3D8`
+- 根主题：`smarthome/<deviceType>/<deviceName>-<MAC_LAST6>`
+  - 示例：`smarthome/switch/esp-switch-02E3D8`
 - 主题说明：
   - `~/status`：LWT 在线状态（`online`/`offline`，retain）
   - `~/state`：整体状态 JSON（retain）
