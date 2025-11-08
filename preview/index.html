@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP8266 舵机控制与配置（预览）</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto;max-width:520px;margin:24px auto;padding:0 12px}
+    h1{font-size:20px;margin:0 0 12px}
+    .card{border:1px solid #ddd;border-radius:8px;padding:12px;margin-top:12px}
+    .row{display:flex;align-items:center;gap:12px;margin:8px 0}
+    input[type=range]{width:100%}
+    button{padding:6px 10px;border:1px solid #888;border-radius:6px;background:#fafafa;cursor:pointer}
+    button:hover{background:#f0f0f0}
+    .hint{color:#666;font-size:12px}
+    input[type=text],input[type=number],input[type=password]{padding:6px;border:1px solid #ccc;border-radius:6px}
+    label>input{margin-left:6px}
+    code{background:#f6f6f6;padding:2px 4px;border-radius:4px}
+  </style>
+</head>
+<body>
+  <h1>ESP8266 舵机控制与配置 <span class="hint">（此为静态预览，动态数据在设备上）</span></h1>
+
+  <div class="card">
+    <div class="row"><strong>设备信息</strong></div>
+    <div class="row">
+      <label>设备名<input type="text" placeholder="例如：客厅窗帘"></label>
+      <label>类型<input type="text" placeholder="servo"></label>
+      <button>保存设备信息</button>
+    </div>
+    <div class="hint">说明：设备名用于路由器和 mDNS 显示（http://设备名.local）。</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>WiFi 配置</strong></div>
+    <div class="row">
+      <label>SSID<input type="text" placeholder="WiFi 名称"></label>
+      <label>密码<input type="password" placeholder="WiFi 密码"></label>
+      <button>保存并连接</button>
+    </div>
+    <div class="hint">若路由器连接失败，设备会自动开启 AP “esp-servo-setup”用于配网。</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>MQTT 配置</strong></div>
+    <div class="row">
+      <label>主机<input type="text" placeholder="mqtt.example.com"></label>
+      <label>端口<input type="number" value="1883" style="width:100px"></label>
+    </div>
+    <div class="row">
+      <label>用户名<input type="text"></label>
+      <label>密码<input type="password"></label>
+      <button>保存并连接</button>
+    </div>
+    <div class="row">
+      <button>重发 HA 自动发现</button>
+      <button style="margin-left:8px">清理并重发</button>
+      <span class="hint">用于 Home Assistant 自动发现实体（滑杆与动作按钮）。此预览为静态示例，实际请访问设备网页操作。</span>
+    </div>
+    <div class="hint">主题前缀：<code>esp-servo/CC50E3...</code>；发布角度在 <code>/angle</code>，订阅设角命令在 <code>/set</code>。</div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label for="angle">角度: <span id="val">-</span>°</label>
+    </div>
+    <div class="row">
+      <input id="angle" type="range" min="0" max="180" step="1">
+    </div>
+    <div class="row">
+      <button>最小(0°)</button>
+      <button>居中(90°)</button>
+      <button>最大(180°)</button>
+    </div>
+    <div class="row">
+      <label><input id="sweep" type="checkbox"> 开启自动扫动</label>
+    </div>
+    <div class="hint">提示：拖动滑条或点按钮可立即设置角度；开启扫动将忽略滑条固定角度。</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>脉宽范围校准 (微秒)</strong></div>
+    <div class="row">
+      <label>最小(us)：<input type="number" min="400" max="2600" step="10" style="width:100px"></label>
+      <label>最大(us)：<input type="number" min="400" max="2600" step="10" style="width:100px"></label>
+      <button>应用</button>
+    </div>
+    <div class="hint">说明：不同舵机出厂行程不同，适当扩大范围（如 500..2500）可获得更大角度；请避免机械卡滞。</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>组合动作</strong> <span class="hint">未运行</span></div>
+    <div class="row">
+      <label>名称<input type="text" placeholder="例如：往返动作"></label>
+    </div>
+    <div class="row"><strong>简单模式</strong></div>
+    <div class="row">
+      <label>A角度<input type="number" min="0" max="180" step="1" style="width:100px" placeholder="90"></label>
+      <label>延时(ms)<input type="number" min="0" max="5000" step="50" style="width:120px" placeholder="300"></label>
+      <label>B角度<input type="number" min="0" max="180" step="1" style="width:100px" placeholder="30"></label>
+    </div>
+    <div class="row"><strong>脚本模式</strong></div>
+    <div class="row">
+      <textarea rows="3" style="width:100%" placeholder="示例：A:90;W:300;A:30"></textarea>
+    </div>
+    <div class="row">
+      <button>执行组合动作</button>
+      <button>保存组合动作</button>
+    </div>
+    <div class="row"><strong>已保存动作</strong></div>
+    <div class="row" style="flex-direction:column;align-items:flex-start">
+      <div><strong>往返动作</strong> <code>A:90;W:300;A:30</code> <button>执行</button> <button>删除</button></div>
+      <div><strong>快速到位</strong> <code>A:180</code> <button>执行</button> <button>删除</button></div>
+    </div>
+    <div class="hint">脚本支持：A:角度 / A角度；W:毫秒 / wait=毫秒 / delay=毫秒；使用 ; 或 , 分隔步骤。</div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>状态</strong></div>
+    <div class="row">
+      <div>WiFi/MQTT 连接状态将在设备上显示</div>
+    </div>
+  </div>
+
+</body>
+</html>
