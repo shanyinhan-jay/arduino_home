@@ -1,9 +1,9 @@
 # ESP8266 双路继电器开关（switch_example）使用说明
 
-本说明适用于本仓库中的 `switch_example` 固件，基于 ESP8266（NodeMCU v2 等）与 Arduino 框架。固件提供 2 路继电器控制、可配置的 LED 开/关颜色与亮度、白天阈值(daytime)联动逻辑，以及与 Home Assistant 的 MQTT 集成（自动发现）。
+本说明适用于本仓库中的 `switch_example` 固件，基于 ESP8266（NodeMCU v2 等）与 Arduino 框架。固件提供1~3路继电器控制、可配置的 LED 开/关颜色与亮度、白天阈值(daytime)联动逻辑，以及与 Home Assistant 的 MQTT 集成（自动发现）。
 
 ## 设备特性
-- 2 路继电器通道（`CH 1`、`CH 2`），支持开/关/切换
+- 继电器通道，支持开/关/切换
 - LED 显示：
   - “打开态”与“关闭态”各自独立的 RGB 颜色与亮度（0–255）
   - Home Assistant 中以两个 `light` 实体暴露：`LED On` 与 `LED Off`
