@@ -45,9 +45,12 @@ void computeMqttRootTopic();
 void handleGetCombos();
 void handleSaveCombo();
 void handleDeleteCombo();
+void publishHaComboDiscovery(const String &name);
 void publishHaDiscovery();
 void handlePublishHa();
 void clearHaDiscovery();
+void clearHaDiscoveryCombo(const String &name);
+void handleHaClearCombo();
 void mqttSetup();
 void handleSetMqtt();
 void handleSetDevice();
@@ -216,6 +219,7 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
       <label>密码<input id="wifiPass" type="password" placeholder="WiFi 密码"></label>
       <button onclick="saveWifi()">保存并连接</button>
     </div>
+    <div class="row"><div class="hint">当前连接：<span id="wifiSsidNow">-</span>；强度：<span id="wifiStrength">-</span></div></div>
     <div class="hint">若路由器连接失败，设备会自动开启 AP “esp-servo-setup”用于配网。</div>
   </div>
 
@@ -242,8 +246,8 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
     </div>
     <div class="row">
       <button onclick="sendHa()">重发 HA 自动发现</button>
-      <button onclick="sendHaReset()" style="margin-left:8px">清理并重发</button>
-      <span class="hint">用于 Home Assistant 自动发现实体（滑杆与动作按钮）</span>
+      <button onclick="sendHaClearAll()" style="margin-left:8px">清理自动发现（设备及全部实体）</button>
+      <span class="hint">将删除该设备在 Home Assistant 的所有已发现实体。</span>
     </div>
   </div>
 
@@ -313,6 +317,8 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
   const devTypeEl = document.getElementById('devType');
   const wifiSsidEl = document.getElementById('wifiSsid');
   const wifiPassEl = document.getElementById('wifiPass');
+  const wifiSsidNowEl = document.getElementById('wifiSsidNow');
+  const wifiStrengthEl = document.getElementById('wifiStrength');
   const mqttHostEl = document.getElementById('mqttHost');
   const mqttPortEl = document.getElementById('mqttPort');
   const mqttUserEl = document.getElementById('mqttUser');
@@ -359,6 +365,9 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
       safeSetValue(devNameEl, st.name || '');
       safeSetValue(devTypeEl, st.type || 'servo');
       safeSetValue(wifiSsidEl, (st.wifi && st.wifi.ssid) ? st.wifi.ssid : '');
+      const w = st.wifi || {};
+      if(wifiSsidNowEl) wifiSsidNowEl.textContent = w.ssid || '-';
+      if(wifiStrengthEl) wifiStrengthEl.textContent = (typeof w.rssi === 'number') ? (w.rssi + ' dBm') : '-';
       safeSetValue(mqttHostEl, (st.mqtt && st.mqtt.host) ? st.mqtt.host : '');
       safeSetValue(mqttPortEl, (st.mqtt && st.mqtt.port) ? st.mqtt.port : 1883);
       const seq = st.sequence || { running:0, index:0, count:0 };
@@ -432,10 +441,25 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
     fetch(url).then(()=>{ refreshCombos(); }).catch(console.error);
   }
   function sendHa(){
-    fetch('/api/ha_discovery').then(()=>refresh()).catch(console.error);
+    fetch('/api/ha_discovery')
+      .then(()=>{ alert('已发送 HA 自动发现'); refresh(); })
+      .catch((e)=>{ console.error(e); alert('发送 HA 自动发现失败'); });
   }
   function sendHaReset(){
     fetch('/api/ha_discovery?reset=1').then(()=>refresh()).catch(console.error);
+  }
+  function sendHaClearAll(){
+    fetch('/api/ha_discovery?reset=1')
+      .then(()=>{ alert('已清理设备及全部实体的自动发现'); refresh(); })
+      .catch((e)=>{ console.error(e); alert('清理自动发现失败'); });
+  }
+  function sendHaClearCombo(){
+    const el = document.getElementById('haClearName');
+    const name = (el && el.value) ? el.value.trim() : '';
+    if(!name){ alert('请输入要清理的动作名称'); return; }
+    fetch('/api/ha_clear_combo?name='+encodeURIComponent(name))
+      .then(()=>{ alert('已清理动作发现：'+name); refresh(); })
+      .catch((e)=>{ console.error(e); alert('清理动作发现失败：'+name); });
   }
   function refreshCombos(){
     fetch('/api/combo_list').then(r=>r.json()).then(j=>{
@@ -469,7 +493,12 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
   }
   function delSaved(nameEnc){
     const name = decodeURIComponent(nameEnc);
-    fetch('/api/combo_delete?name='+encodeURIComponent(name)).then(()=>refreshCombos()).catch(console.error);
+    fetch('/api/combo_delete?name='+encodeURIComponent(name))
+      .then(()=>{
+        return fetch('/api/ha_clear_combo?name='+encodeURIComponent(name));
+      })
+      .then(()=>{ alert('已删除并清理该动作的自动发现：'+name); refreshCombos(); })
+      .catch((e)=>{ console.error(e); alert('删除或清理失败：'+name); });
   }
   refresh();
   setInterval(refresh, 1000);
@@ -637,6 +666,7 @@ void setup() {
     server.send(404, "text/plain", "Not Found");
   });
   server.on("/api/ha_discovery", HTTP_GET, handlePublishHa);
+  server.on("/api/ha_clear_combo", HTTP_GET, handleHaClearCombo);
   server.begin();
   Serial.println("WebServer started.");
 
@@ -767,7 +797,23 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
   }
 }
 void mqttSetup(){ mqttClient.setServer(mqttHostStr.c_str(), mqttPortVal); mqttClient.setCallback(mqttCallback); }
-void mqttPublishState(){ if(!mqttClient.connected()) return; String st = String(angle); mqttClient.publish((mqttRootTopic+"/angle").c_str(), st.c_str(), true); }
+void mqttPublishState(){
+  if(!mqttClient.connected()) return;
+  // 舵机角度
+  String st = String(angle);
+  mqttClient.publish((mqttRootTopic+"/angle").c_str(), st.c_str(), true);
+  // WiFi 状态（SSID 与 RSSI），用于 HA 诊断传感器
+  String ssid = WiFi.SSID();
+  int rssi = WiFi.RSSI();
+  if(WiFi.status()==WL_CONNECTED){
+    mqttClient.publish((mqttRootTopic+"/wifi/ssid").c_str(), ssid.c_str(), true);
+    String rssiStr = String(rssi);
+    mqttClient.publish((mqttRootTopic+"/wifi/rssi").c_str(), rssiStr.c_str(), true);
+  } else {
+    mqttClient.publish((mqttRootTopic+"/wifi/ssid").c_str(), "offline", true);
+    mqttClient.publish((mqttRootTopic+"/wifi/rssi").c_str(), "-100", true);
+  }
+}
 void mqttEnsureConnected(){
   if(WiFi.status()!=WL_CONNECTED) return;
   if(mqttClient.connected()) return;
@@ -879,6 +925,8 @@ void handleSaveCombo(){
     comboCount++;
   }
   saveCfg();
+  // 保存后立即将该动作的 HA 实体发布到自动发现
+  publishHaComboDiscovery(name);
   server.send(200, "application/json", "{\"ok\":true}");
 }
 void handleDeleteCombo(){
@@ -889,6 +937,8 @@ void handleDeleteCombo(){
   for(uint8_t i=idx;i+1<comboCount;i++){ comboNames[i]=comboNames[i+1]; comboScripts[i]=comboScripts[i+1]; }
   if(comboCount>0) comboCount--;
   saveCfg();
+  // 同步清理该动作的 HA 自动发现
+  clearHaDiscoveryCombo(name);
   server.send(200, "application/json", "{\"ok\":true}");
 }
 void handleSetDevice(){
@@ -932,7 +982,8 @@ void publishHaDiscovery(){
     String objAngle = String("angle");
     String cfgTopicAngle = String("homeassistant/number/") + nodeId + "/" + objAngle + "/config";
     String cfg = String("{\"~\":\"") + mqttRootTopic + "\","; // base topic
-    cfg += "\"name\":\"" + (deviceName.length()?deviceName:String("Servo")) + String(" 角度") + "\",";
+    String angleName = (deviceName.length()?deviceName:String("servo")) + String("-angle");
+    cfg += "\"name\":\"" + angleName + "\",";
     cfg += "\"uniq_id\":\"" + nodeId + String("_") + objAngle + "\",";
     cfg += "\"cmd_t\":\"~/set\",\"stat_t\":\"~/angle\",";
     cfg += "\"min\":0,\"max\":180,\"step\":1,";
@@ -948,7 +999,8 @@ void publishHaDiscovery(){
     String objId = sanitizeId(name, 48);
     String cfgTopicBtn = String("homeassistant/button/") + nodeId + "/" + objId + "/config";
     String cfg = String("{\"~\":\"") + mqttRootTopic + "\","; // base topic
-    cfg += "\"name\":\"" + name + "\",";
+    String btnName = (deviceName.length()?deviceName:String("servo")) + String("-") + name;
+    cfg += "\"name\":\"" + btnName + "\",";
     cfg += "\"uniq_id\":\"" + nodeId + String("_") + objId + "\",";
     cfg += "\"cmd_t\":\"~/combo/" + objId + "/press\",";
     cfg += "\"pl_prs\":\"PRESS\",";
@@ -957,8 +1009,57 @@ void publishHaDiscovery(){
     cfg += "}";
     mqttClient.publish(cfgTopicBtn.c_str(), cfg.c_str(), true);
   }
+  // WiFi 诊断传感器：RSSI（dBm）与 SSID
+  {
+    String cfgTopicRssi = String("homeassistant/sensor/") + nodeId + "/wifi_rssi/config";
+    String cfg = String("{\"~\":\"") + mqttRootTopic + "\",";
+    cfg += "\"name\":\"" + dispName + " WiFi 强度\",";
+    cfg += "\"uniq_id\":\"" + nodeId + "_wifi_rssi\",";
+    cfg += "\"stat_t\":\"~/wifi/rssi\",";
+    cfg += "\"device_class\":\"signal_strength\",\"unit_of_measurement\":\"dBm\",";
+    cfg += "\"avty_t\":\"~/status\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",";
+    cfg += deviceJson;
+    cfg += "}";
+    mqttClient.publish(cfgTopicRssi.c_str(), cfg.c_str(), true);
+  }
+  {
+    String cfgTopicSsid = String("homeassistant/sensor/") + nodeId + "/wifi_ssid/config";
+    String cfg = String("{\"~\":\"") + mqttRootTopic + "\",";
+    cfg += "\"name\":\"" + dispName + " WiFi SSID\",";
+    cfg += "\"uniq_id\":\"" + nodeId + "_wifi_ssid\",";
+    cfg += "\"stat_t\":\"~/wifi/ssid\",";
+    cfg += "\"entity_category\":\"diagnostic\",";
+    cfg += "\"avty_t\":\"~/status\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",";
+    cfg += deviceJson;
+    cfg += "}";
+    mqttClient.publish(cfgTopicSsid.c_str(), cfg.c_str(), true);
+  }
   mqttPublishState();
   Serial.println("[HA] Discovery published");
+}
+
+// 仅发布单个组合动作的 HA 自动发现按钮实体
+void publishHaComboDiscovery(const String &name){
+  if(!mqttClient.connected()) { mqttEnsureConnected(); }
+  if(!mqttClient.connected()) { Serial.println("[HA] MQTT not connected, skip single combo discovery"); return; }
+  String macPart = deviceId.length()>=6 ? deviceId.substring(deviceId.length()-6) : deviceId;
+  String nodeId = sanitizeId(deviceType + String("-") + (deviceName.length()?deviceName:String("servo")) + String("-") + macPart, 48);
+  String dispName = deviceName.length() ? deviceName : (String("esp-servo-") + macPart);
+  String deviceJson = String("\"device\":{\"identifiers\":[\"") + deviceId + "\"],\"name\":\"" + dispName + "\",\"model\":\"" + deviceType + "\",\"manufacturer\":\"ESP8266\",\"sw_version\":\"servo_test\"}";
+
+  String objId = sanitizeId(name, 48);
+  String cfgTopicBtn = String("homeassistant/button/") + nodeId + "/" + objId + "/config";
+  String cfg = String("{\"~\":\"") + mqttRootTopic + "\","; // base topic
+  String btnName = (deviceName.length()?deviceName:String("servo")) + String("-") + name;
+  cfg += "\"name\":\"" + btnName + "\",";
+  cfg += "\"uniq_id\":\"" + nodeId + String("_") + objId + "\",";
+  cfg += "\"cmd_t\":\"~/combo/" + objId + "/press\",";
+  cfg += "\"pl_prs\":\"PRESS\",";
+  cfg += "\"avty_t\":\"~/status\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",";
+  cfg += deviceJson;
+  cfg += "}";
+  mqttClient.publish(cfgTopicBtn.c_str(), cfg.c_str(), true);
+  Serial.printf("[HA] Published combo discovery: %s\n", name.c_str());
 }
 // 清理 HA 自动发现：向 config 主题发布空保留消息以删除旧实体
 void clearHaDiscovery(){
@@ -979,7 +1080,44 @@ void clearHaDiscovery(){
     String cfgTopicBtn = String("homeassistant/button/") + nodeId + "/" + objId + "/config";
     mqttClient.publish(cfgTopicBtn.c_str(), "", true);
   }
+  // 删除 WiFi 诊断传感器
+  {
+    String cfgTopicRssi = String("homeassistant/sensor/") + nodeId + "/wifi_rssi/config";
+    mqttClient.publish(cfgTopicRssi.c_str(), "", true);
+  }
+  {
+    String cfgTopicSsid = String("homeassistant/sensor/") + nodeId + "/wifi_ssid/config";
+    mqttClient.publish(cfgTopicSsid.c_str(), "", true);
+  }
   Serial.println("[HA] Discovery cleared");
+}
+
+// 清理单个组合动作的 HA 发现
+void clearHaDiscoveryCombo(const String &name){
+  if(!mqttClient.connected()) { mqttEnsureConnected(); }
+  if(!mqttClient.connected()) { Serial.println("[HA] MQTT not connected, skip clear combo"); return; }
+  String macPart = deviceId.length()>=6 ? deviceId.substring(deviceId.length()-6) : deviceId;
+  String nodeId = sanitizeId(deviceType + String("-") + (deviceName.length()?deviceName:String("servo")) + String("-") + macPart, 48);
+  String objId = sanitizeId(name, 48);
+  String cfgTopicBtn = String("homeassistant/button/") + nodeId + "/" + objId + "/config";
+  mqttClient.publish(cfgTopicBtn.c_str(), "", true);
+  Serial.printf("[HA] Cleared combo discovery: %s\n", name.c_str());
+}
+
+// HTTP: /api/ha_clear_combo?name=<动作名称>
+void handleHaClearCombo(){
+  if(!server.hasArg("name")){
+    server.send(400, "application/json", "{\"error\":\"missing name\"}");
+    return;
+  }
+  String name = server.arg("name"); name.trim();
+  if(!name.length()){
+    server.send(400, "application/json", "{\"error\":\"empty name\"}");
+    return;
+  }
+  clearHaDiscoveryCombo(name);
+  String resp = String("{\"ok\":true,\"name\":\"") + name + String("\"}");
+  server.send(200, "application/json", resp);
 }
 void handlePublishHa(){
   bool doReset = server.hasArg("reset") && server.arg("reset") != String("0");
