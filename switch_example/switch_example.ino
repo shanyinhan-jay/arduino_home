@@ -103,6 +103,7 @@ const uint8_t CONN_BLUE_R = 0;
 const uint8_t CONN_BLUE_G = 0;
 const uint8_t CONN_BLUE_B = 255;
 
+
 // ======================= EEPROM 持久化 =======================
 #define EEPROM_SIZE     512
 #define EEPROM_MAGIC    0xA7
@@ -180,6 +181,7 @@ void applyLedConfigToRuntime(const LedConfig &c) {
   mqttUser = String(c.mqttUser);
   mqttPass = String(c.mqttPass);
   daytimeThreshold = c.daytime;
+  if (daytimeThreshold > 2000) daytimeThreshold = 2000;
   updateLedStates();
 }
 
@@ -452,6 +454,111 @@ void mqttOnMessage(char* topic, byte* payload, unsigned int length) {
       return;
     }
   }
+  // 处理 LED On Light 的 JSON 命令：<root>/led_on/set
+  {
+    String ledOnCmd = mqttRootTopic + String("/led_on/set");
+    if (t == ledOnCmd) {
+      String p; p.reserve(length + 1);
+      for (unsigned int i = 0; i < length; i++) p += (char)payload[i];
+      // 解析 brightness
+      int brIndex = p.indexOf("\"brightness\"");
+      if (brIndex >= 0) {
+        int colon = p.indexOf(':', brIndex); if (colon > 0) {
+          int i = colon + 1; while (i < (int)p.length() && (p[i] == ' ' || p[i] == '"')) i++;
+          int val = 0; while (i < (int)p.length() && isDigit(p[i])) { val = val * 10 + (p[i]-'0'); i++; }
+          if (val < 0) val = 0; if (val > 255) val = 255; ledOnBrightness = (uint8_t)val;
+        }
+      }
+      // 解析 color {r,g,b}
+      int colIndex = p.indexOf("\"color\"");
+      if (colIndex >= 0) {
+        // 查找 r
+        int rKey = p.indexOf("\"r\"", colIndex);
+        int gKey = p.indexOf("\"g\"", colIndex);
+        int bKey = p.indexOf("\"b\"", colIndex);
+        auto parseComp = [&](int keyPos) -> int {
+          if (keyPos < 0) return -1;
+          int c = p.indexOf(':', keyPos); if (c < 0) return -1;
+          int i = c + 1; while (i < (int)p.length() && (p[i] == ' ' || p[i] == '"')) i++;
+          int v = 0; bool any=false; while (i < (int)p.length() && isDigit(p[i])) { v = v*10 + (p[i]-'0'); i++; any=true; }
+          if (!any) return -1; if (v < 0) v = 0; if (v > 255) v = 255; return v;
+        };
+        int r = parseComp(rKey), g = parseComp(gKey), b = parseComp(bKey);
+        if (r >= 0 && g >= 0 && b >= 0) { ledOnR = (uint8_t)r; ledOnG = (uint8_t)g; ledOnB = (uint8_t)b; }
+      }
+      updateLedStates();
+      saveLedConfig();
+      mqttPublishFullState();
+      // 发布 LED On Light 独立状态
+      if (mqttClient.connected()) {
+        String stTopic = mqttRootTopic + "/led_on/state";
+        String json = String("{\"state\":\"ON\",\"brightness\":") + String((int)ledOnBrightness) + ",\"color_mode\":\"rgb\",\"color\":{\"r\":" + String((int)ledOnR) + ",\"g\":" + String((int)ledOnG) + ",\"b\":" + String((int)ledOnB) + "}}";
+        mqttClient.publish(stTopic.c_str(), json.c_str(), true);
+      }
+      return;
+    }
+  }
+  // 处理 LED Off Light 的 JSON 命令：<root>/led_off/set
+  {
+    String ledOffCmd = mqttRootTopic + String("/led_off/set");
+    if (t == ledOffCmd) {
+      String p; p.reserve(length + 1);
+      for (unsigned int i = 0; i < length; i++) p += (char)payload[i];
+      int brIndex = p.indexOf("\"brightness\"");
+      if (brIndex >= 0) {
+        int colon = p.indexOf(':', brIndex); if (colon > 0) {
+          int i = colon + 1; while (i < (int)p.length() && (p[i] == ' ' || p[i] == '"')) i++;
+          int val = 0; while (i < (int)p.length() && isDigit(p[i])) { val = val * 10 + (p[i]-'0'); i++; }
+          if (val < 0) val = 0; if (val > 255) val = 255; ledOffBrightness = (uint8_t)val;
+        }
+      }
+      int colIndex = p.indexOf("\"color\"");
+      if (colIndex >= 0) {
+        int rKey = p.indexOf("\"r\"", colIndex);
+        int gKey = p.indexOf("\"g\"", colIndex);
+        int bKey = p.indexOf("\"b\"", colIndex);
+        auto parseComp = [&](int keyPos) -> int {
+          if (keyPos < 0) return -1;
+          int c = p.indexOf(':', keyPos); if (c < 0) return -1;
+          int i = c + 1; while (i < (int)p.length() && (p[i] == ' ' || p[i] == '"')) i++;
+          int v = 0; bool any=false; while (i < (int)p.length() && isDigit(p[i])) { v = v*10 + (p[i]-'0'); i++; any=true; }
+          if (!any) return -1; if (v < 0) v = 0; if (v > 255) v = 255; return v;
+        };
+        int r = parseComp(rKey), g = parseComp(gKey), b = parseComp(bKey);
+        if (r >= 0 && g >= 0 && b >= 0) { ledOffR = (uint8_t)r; ledOffG = (uint8_t)g; ledOffB = (uint8_t)b; }
+      }
+      updateLedStates();
+      saveLedConfig();
+      mqttPublishFullState();
+      if (mqttClient.connected()) {
+        String stTopic = mqttRootTopic + "/led_off/state";
+        String json = String("{\"state\":\"ON\",\"brightness\":") + String((int)ledOffBrightness) + ",\"color_mode\":\"rgb\",\"color\":{\"r\":" + String((int)ledOffR) + ",\"g\":" + String((int)ledOffG) + ",\"b\":" + String((int)ledOffB) + "}}";
+        mqttClient.publish(stTopic.c_str(), json.c_str(), true);
+      }
+      return;
+    }
+  }
+  // 处理 Daytime 阈值设置命令：<root>/daytime/set（payload 为数字）
+  {
+    String daytimeCmd = mqttRootTopic + String("/daytime/set");
+    if (t == daytimeCmd) {
+      String p; p.reserve(length + 1);
+      for (unsigned int i = 0; i < length; i++) p += (char)payload[i];
+      p.trim();
+      long v = p.toInt();
+      if (v < 0) v = 0; if (v > 2000) v = 2000;
+      daytimeThreshold = (uint16_t)v;
+      saveLedConfig();
+      updateLedStates();
+      mqttPublishFullState();
+      if (mqttClient.connected()) {
+        String stTopic = mqttRootTopic + "/daytime/state";
+        String s = String((unsigned)daytimeThreshold);
+        mqttClient.publish(stTopic.c_str(), s.c_str(), true);
+      }
+      return;
+    }
+  }
   // 打印其他消息以便调试
   // 处理照度传感器消息
   if (t == String(SENSOR_ILLUM_TOPIC)) {
@@ -495,6 +602,14 @@ void mqttEnsureConnected() {
         // 订阅命令主题
         String cmdTopic = mqttRootTopic + "/cmd/#";
         mqttClient.subscribe(cmdTopic.c_str());
+        // 订阅 Light 命令主题（JSON schema）
+        String ledOnCmd = mqttRootTopic + "/led_on/set";
+        String ledOffCmd = mqttRootTopic + "/led_off/set";
+        mqttClient.subscribe(ledOnCmd.c_str());
+        mqttClient.subscribe(ledOffCmd.c_str());
+        // 订阅 Daytime 阈值设置主题（MQTT number）
+        String daytimeCmd = mqttRootTopic + "/daytime/set";
+        mqttClient.subscribe(daytimeCmd.c_str());
         // 订阅照度传感器主题
         mqttClient.subscribe(SENSOR_ILLUM_TOPIC);
         Serial.print("MQTT subscribed: "); Serial.println(cmdTopic);
@@ -504,6 +619,17 @@ void mqttEnsureConnected() {
         mqttPublishFullState();
         // MQTT 已连接，恢复 LED 按开关状态正常渲染
         updateLedStates();
+        // 发布两个 Light 的当前状态，便于 HA 立即同步
+        String ledOnSt = mqttRootTopic + "/led_on/state";
+        String ledOnJson = String("{\"state\":\"ON\",\"brightness\":") + String((int)ledOnBrightness) + ",\"color_mode\":\"rgb\",\"color\":{\"r\":" + String((int)ledOnR) + ",\"g\":" + String((int)ledOnG) + ",\"b\":" + String((int)ledOnB) + "}}";
+        mqttClient.publish(ledOnSt.c_str(), ledOnJson.c_str(), true);
+        String ledOffSt = mqttRootTopic + "/led_off/state";
+        String ledOffJson = String("{\"state\":\"ON\",\"brightness\":") + String((int)ledOffBrightness) + ",\"color_mode\":\"rgb\",\"color\":{\"r\":" + String((int)ledOffR) + ",\"g\":" + String((int)ledOffG) + ",\"b\":" + String((int)ledOffB) + "}}";
+        mqttClient.publish(ledOffSt.c_str(), ledOffJson.c_str(), true);
+        // 发布 Daytime 阈值当前状态（便于 HA 立即同步）
+        String daytimeSt = mqttRootTopic + "/daytime/state";
+        String daytimeStr = String((unsigned)daytimeThreshold);
+        mqttClient.publish(daytimeSt.c_str(), daytimeStr.c_str(), true);
       } else {
         Serial.print("MQTT connect failed, rc=");
         Serial.println(mqttClient.state());
@@ -553,6 +679,58 @@ void publishHaDiscovery() {
     cfg += "\"device\":{\"identifiers\":[\"" + deviceMacNoColon + "\"],\"name\":\"" + deviceName + "\",\"model\":\"" + deviceType + "\",\"manufacturer\":\"ESP8266\",\"sw_version\":\"switch_example\"}}";
     mqttClient.publish(cfgTopic.c_str(), cfg.c_str(), true);
   }
+
+  // 发布两个可控 Light（JSON schema），用于配置开/关态 LED 的颜色与亮度
+  {
+    String cfgTopic = String("homeassistant/light/") + nodeId + "/led_on/config";
+    String cfg = "{\"~\":\"" + mqttRootTopic + "\",";
+    cfg += "\"name\":\"" + deviceName + " LED On\",";
+    cfg += "\"uniq_id\":\"" + deviceMacNoColon + "-led-on\",";
+    cfg += "\"schema\":\"json\",";
+    cfg += "\"cmd_t\":\"~/led_on/set\",";
+    cfg += "\"stat_t\":\"~/led_on/state\",";
+    cfg += "\"brightness\":true,";
+    cfg += "\"color_mode\":true,";
+    cfg += "\"supported_color_modes\":[\"rgb\"],";
+    cfg += "\"avty_t\":\"~/status\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",";
+    cfg += "\"device\":{\"identifiers\":[\"" + deviceMacNoColon + "\"],\"name\":\"" + deviceName + "\",\"model\":\"" + deviceType + "\",\"manufacturer\":\"ESP8266\",\"sw_version\":\"switch_example\"}}";
+    mqttClient.publish(cfgTopic.c_str(), cfg.c_str(), true);
+  }
+  {
+    String cfgTopic = String("homeassistant/light/") + nodeId + "/led_off/config";
+    String cfg = "{\"~\":\"" + mqttRootTopic + "\",";
+    cfg += "\"name\":\"" + deviceName + " LED Off\",";
+    cfg += "\"uniq_id\":\"" + deviceMacNoColon + "-led-off\",";
+    cfg += "\"schema\":\"json\",";
+    cfg += "\"cmd_t\":\"~/led_off/set\",";
+    cfg += "\"stat_t\":\"~/led_off/state\",";
+    cfg += "\"brightness\":true,";
+    cfg += "\"color_mode\":true,";
+    cfg += "\"supported_color_modes\":[\"rgb\"],";
+    cfg += "\"avty_t\":\"~/status\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",";
+    cfg += "\"device\":{\"identifiers\":[\"" + deviceMacNoColon + "\"],\"name\":\"" + deviceName + "\",\"model\":\"" + deviceType + "\",\"manufacturer\":\"ESP8266\",\"sw_version\":\"switch_example\"}}";
+    mqttClient.publish(cfgTopic.c_str(), cfg.c_str(), true);
+  }
+  // 发布 Daytime 阈值的 MQTT number 发现（可读写）
+  {
+    String cfgTopic = String("homeassistant/number/") + nodeId + "/daytime/config";
+    String cfg = "{\"~\":\"" + mqttRootTopic + "\",";
+    cfg += "\"name\":\"" + deviceName + " Daytime 阈值\",";
+    cfg += "\"uniq_id\":\"" + deviceMacNoColon + "-daytime\",";
+    cfg += "\"cmd_t\":\"~/daytime/set\",";
+    cfg += "\"stat_t\":\"~/daytime/state\",";
+    cfg += "\"min\":0,\"max\":2000,\"step\":1,\"mode\":\"slider\",";
+    cfg += "\"avty_t\":\"~/status\",\"pl_avail\":\"online\",\"pl_not_avail\":\"offline\",";
+    cfg += "\"device\":{\"identifiers\":[\"" + deviceMacNoColon + "\"],\"name\":\"" + deviceName + "\",\"model\":\"" + deviceType + "\",\"manufacturer\":\"ESP8266\",\"sw_version\":\"switch_example\"}}";
+    mqttClient.publish(cfgTopic.c_str(), cfg.c_str(), true);
+  }
+  // 清理旧的传感器实体：发布空配置（retain）以删除
+  {
+    String delOn = String("homeassistant/sensor/") + nodeId + "/led_on/config";
+    mqttClient.publish(delOn.c_str(), "", true);
+    String delOff = String("homeassistant/sensor/") + nodeId + "/led_off/config";
+    mqttClient.publish(delOff.c_str(), "", true);
+  }
 }
 
 // ======================= WiFi 与 WebServer =======================
@@ -570,6 +748,9 @@ void connectWiFi() {
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
     delay(300);
+    // 避免阻塞期间触发硬件看门狗复位
+    ESP.wdtFeed();
+    yield();
     Serial.print(".");
   }
   Serial.println();
@@ -630,7 +811,7 @@ String buildHtml() {
   html += "<div class='row'><label>LED关闭颜色: <input type='color' id='ledOffColor' onchange=\"setLedOff()\"></label>";
   html += "<label style='margin-left:12px'>亮度: <input type='range' id='ledOffBright' min='0' max='255' step='1' oninput=\"setLedOff()\"> <code id='ledOffBrightVal' class='ip'>0</code></label></div>";
   // Daytime 阈值与照度显示
-  html += "<div class='row'><label>白天阈值(daytime): <input type='number' id='cfgDaytime' style='width:100px' min='0' max='100000' step='1'></label>";
+  html += "<div class='row'><label>白天阈值(daytime): <input type='number' id='cfgDaytime' style='width:100px' min='0' max='2000' step='1'></label>";
   html += "<button style='margin-left:8px' onclick=\"setDaytime()\">保存Daytime</button>";
   html += "<span style='margin-left:12px' class='ip'>最近照度: <code id='illumValue'>未知</code></span></div>";
   // 互斥窗帘模式切换
@@ -819,11 +1000,17 @@ void handleSetLedOff() {
 void handleSetDaytime() {
   if (!server.hasArg("value")) { server.send(400, "application/json", "{\"error\":\"missing value\"}"); return; }
   int v = server.arg("value").toInt();
-  if (v < 0) v = 0; if (v > 100000) v = 100000;
+  if (v < 0) v = 0; if (v > 2000) v = 2000;
   daytimeThreshold = (uint16_t)v;
   saveLedConfig();
   updateLedStates();
   mqttPublishFullState();
+  // 同步到 MQTT number 的状态主题
+  if (mqttClient.connected()) {
+    String stTopic = mqttRootTopic + "/daytime/state";
+    String s = String((unsigned)daytimeThreshold);
+    mqttClient.publish(stTopic.c_str(), s.c_str(), true);
+  }
   server.send(200, "application/json", String("{\"ok\":true,\"daytime\":") + String(daytimeThreshold) + "}");
 }
 
@@ -927,6 +1114,8 @@ void setup() {
   delay(50);
   Serial.printf("EEPROM_SIZE=%u, LedConfig=%u bytes\n", EEPROM_SIZE, (unsigned)sizeof(LedConfig));
 
+  // 看门狗：ESP8266 硬件看门狗默认开启，确保在阻塞等待时喂狗
+
   // 初始化继电器输出（全部关闭）
   for (int i = 0; i < (int)(sizeof(RELAY_PINS)/sizeof(RELAY_PINS[0])); i++) {
     pinMode(RELAY_PINS[i], OUTPUT);
@@ -999,6 +1188,9 @@ void setup() {
 }
 
 void loop() {
+  // 喂狗：主循环心跳（防止意外长任务触发复位）
+  ESP.wdtFeed();
+
   // 处理 Web 请求
   server.handleClient();
 
