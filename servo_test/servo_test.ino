@@ -1104,7 +1104,7 @@ void publishHaDiscovery(){
   String macPart = deviceId.length()>=6 ? deviceId.substring(deviceId.length()-6) : deviceId;
   String nodeId = sanitizeId(deviceType + String("-") + (deviceName.length()?deviceName:String("servo")) + String("-") + macPart, 48);
   // 统一的 device 信息（用于在 HA 中创建设备并归属实体）
-  String dispName = deviceName.length() ? deviceName : (String("esp-servo-") + macPart);
+  String dispName = deviceName.length() ? deviceName : String("esp-servo");
   String deviceJson = String("\"device\":{\"identifiers\":[\"") + deviceId + "\"],\"name\":\"" + dispName + "\",\"model\":\"" + deviceType + "\",\"manufacturer\":\"ESP8266\",\"sw_version\":\"servo_test\"}";
 
   // 滑杆（number）：角度控制
@@ -1174,7 +1174,7 @@ void publishHaComboDiscovery(const String &name){
   if(!mqttClient.connected()) { Serial.println("[HA] MQTT not connected, skip single combo discovery"); return; }
   String macPart = deviceId.length()>=6 ? deviceId.substring(deviceId.length()-6) : deviceId;
   String nodeId = sanitizeId(deviceType + String("-") + (deviceName.length()?deviceName:String("servo")) + String("-") + macPart, 48);
-  String dispName = deviceName.length() ? deviceName : (String("esp-servo-") + macPart);
+  String dispName = deviceName.length() ? deviceName : String("esp-servo");
   String deviceJson = String("\"device\":{\"identifiers\":[\"") + deviceId + "\"],\"name\":\"" + dispName + "\",\"model\":\"" + deviceType + "\",\"manufacturer\":\"ESP8266\",\"sw_version\":\"servo_test\"}";
 
   String objId = sanitizeId(name, 48);
@@ -1251,8 +1251,13 @@ void handleHaClearCombo(){
 }
 void handlePublishHa(){
   bool doReset = server.hasArg("reset") && server.arg("reset") != String("0");
-  if(doReset) clearHaDiscovery();
+  if(doReset){
+    // 仅清理已发布的 HA 自动发现配置，不再立即重发
+    clearHaDiscovery();
+    server.send(200, "application/json", "{\"ok\":true,\"reset\":1,\"action\":\"cleared\"}");
+    return;
+  }
+  // 未请求 reset 时，执行自动发现重发
   publishHaDiscovery();
-  String resp = String("{\"ok\":true,\"reset\":") + String(doReset?1:0) + String("}");
-  server.send(200, "application/json", resp);
+  server.send(200, "application/json", "{\"ok\":true,\"reset\":0,\"action\":\"published\"}");
 }
