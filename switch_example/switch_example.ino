@@ -461,6 +461,7 @@ void renderConnectivityLed() {
 // ======================= MQTT 辅助函数 =======================
 void mqttPublishFullState();
 void publishHaDiscovery();
+void clearHaDiscovery();
 
 void computeMqttRootTopic() {
   deviceMacNoColon = WiFi.macAddress();
@@ -770,6 +771,39 @@ void publishHaDiscovery() {
   }
 }
 
+// 清理整个设备的 Home Assistant 自动发现（删除所有实体的 config）
+void clearHaDiscovery() {
+  if (!mqttClient.connected()) return;
+  String nodeId = sanitizeId(deviceName + String("-") + deviceMacNoColon, 64);
+  // 清理所有 switch 通道
+  for (int i = 0; i < NUM_CHANNELS; i++) {
+    String objId = String("ch") + String(i);
+    String cfgTopic = String("homeassistant/switch/") + nodeId + "/" + objId + "/config";
+    mqttClient.publish(cfgTopic.c_str(), "", true);
+  }
+  // 清理 LED On/Off Light 实体
+  {
+    String cfgTopic = String("homeassistant/light/") + nodeId + "/led_on/config";
+    mqttClient.publish(cfgTopic.c_str(), "", true);
+  }
+  {
+    String cfgTopic = String("homeassistant/light/") + nodeId + "/led_off/config";
+    mqttClient.publish(cfgTopic.c_str(), "", true);
+  }
+  // 清理 Daytime 阈值 Number 实体
+  {
+    String cfgTopic = String("homeassistant/number/") + nodeId + "/daytime/config";
+    mqttClient.publish(cfgTopic.c_str(), "", true);
+  }
+  // 兼容旧版：清理曾用的 sensor 实体路径
+  {
+    String delOn = String("homeassistant/sensor/") + nodeId + "/led_on/config";
+    mqttClient.publish(delOn.c_str(), "", true);
+    String delOff = String("homeassistant/sensor/") + nodeId + "/led_off/config";
+    mqttClient.publish(delOff.c_str(), "", true);
+  }
+}
+
 // ======================= WiFi 与 WebServer =======================
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
@@ -812,52 +846,66 @@ void connectWiFi() {
 String buildHtml() {
   String html = "<!doctype html><html><head><meta charset='utf-8'>";
   html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>ESP8266 开关面板</title>";
-  html += "<style>body{font-family:system-ui,Arial;margin:16px;}h1{font-size:18px;}";
-  html += ".row{display:flex;gap:8px;align-items:center;margin:8px 0;}button{padding:6px 10px;}";
-  html += "#status{margin:12px 0;padding:8px;background:#f4f4f4;border-radius:6px;}";
-  html += ".ip{color:#666;font-size:12px;}</style></head><body>";
-  html += "<h1>ESP8266 开关面板</h1><div id='status'>载入中...</div>";
-  // 设备信息
-  html += "<div class='row'><label>设备名称: <input type='text' id='devName' style='width:160px'></label>";
-  html += "<label style='margin-left:12px'>设备类型: <input type='text' id='devType' style='width:120px'></label>";
-  html += "<button onclick=\"setDevice()\">保存</button></div>";
-  // 显示 MQTT 根主题
-  html += "<div class='row'><span>MQTT主题: <code id='mqttRoot'></code></span></div>";
-  // 显示状态与命令主题
-  html += "<div class='row'><span>状态主题: 在线 <code id='mqttStatus'></code> ，全量 <code id='mqttState'></code></span></div>";
-  html += "<div class='row'><span>命令主题: <code id='mqttCmd'></code></span></div>";
-  // 显示 WiFi 连接信息
-  html += "<div class='row'><span>WiFi: SSID <code id='wifiSsid'></code> ，信号 <code id='wifiRssi'></code> dBm</span></div>";
-  // WiFi 配网（AP 模式或需要更改凭据时）
-  html += "<div class='row'><label>WiFi SSID: <input type='text' id='cfgSsid' style='width:160px'></label>";
-  html += "<label style='margin-left:12px'>密码: <input type='password' id='cfgPass' style='width:160px'></label>";
-  html += "<button onclick=\"setWifi()\">保存WiFi</button><span class='ip'>保存后设备将尝试连接路由器</span></div>";
-  // MQTT 配置（主机、端口、账号）
-  html += "<div class='row'><label>MQTT主机: <input type='text' id='cfgMqttHost' style='width:160px' placeholder='例如 192.168.1.10'></label>";
-  html += "<label style='margin-left:12px'>端口: <input type='number' id='cfgMqttPort' style='width:100px' min='1' max='65535' value='1883'></label>";
-  html += "<label style='margin-left:12px'>用户: <input type='text' id='cfgMqttUser' style='width:140px'></label>";
-  html += "<label style='margin-left:12px'>密码: <input type='password' id='cfgMqttPass' style='width:140px' placeholder='不显示'></label>";
-  html += "<button onclick=\"setMqtt()\">保存MQTT</button><span class='ip'>保存后设备将重连 MQTT</span></div>";
-  // 手动重发 HA 自动发现
-  html += "<div class='row'><button onclick=\"sendHa()\">重发 HA 发现</button><span class='ip'>用于 Home Assistant 自动发现</span></div>";
-  // OTA 升级（上传固件 BIN 文件并自动重启）
-  html += "<div class='row'><label>OTA升级: <input type='file' id='otaFile' accept='.bin'></label>";
-  html += "<button style='margin-left:8px' onclick=\"doOta()\">开始升级</button><span class='ip'>选择编译生成的 .bin 固件文件</span></div>";
-  // LED 打开颜色与亮度设置
-  html += "<div class='row'><label>LED打开颜色: <input type='color' id='ledColor' onchange=\"setLed()\"></label>";
-  html += "<label style='margin-left:12px'>亮度: <input type='range' id='ledBright' min='0' max='255' step='1' oninput=\"setLed()\"> <code id='ledBrightVal' class='ip'>0</code></label></div>";
-  // LED 关闭颜色设置
-  html += "<div class='row'><label>LED关闭颜色: <input type='color' id='ledOffColor' onchange=\"setLedOff()\"></label>";
-  html += "<label style='margin-left:12px'>亮度: <input type='range' id='ledOffBright' min='0' max='255' step='1' oninput=\"setLedOff()\"> <code id='ledOffBrightVal' class='ip'>0</code></label></div>";
-  // Daytime 阈值与照度显示
-  html += "<div class='row'><label>白天阈值(daytime): <input type='number' id='cfgDaytime' style='width:100px' min='0' max='2000' step='1'></label>";
-  html += "<button style='margin-left:8px' onclick=\"setDaytime()\">保存Daytime</button>";
-  html += "<span style='margin-left:12px' class='ip'>最近照度: <code id='illumValue'>未知</code></span></div>";
-  // 互斥窗帘模式切换
-  html += "<div class='row'><label><input type='checkbox' id='curtain'";
-  if (curtainMode) html += " checked";
-  html += " onchange=\"setCurtain(this.checked)\">窗帘互斥模式</label></div>";
+  html += "<title>ESP8266 开关控制与配置</title>";
+  html += "<style>";
+  html += "body{font-family:system-ui,-apple-system,Segoe UI,Roboto;max-width:520px;margin:24px auto;padding:0 12px}";
+  html += "h1{font-size:20px;margin:0 0 12px}";
+  html += ".card{border:1px solid #ddd;border-radius:8px;padding:12px;margin-top:12px}";
+  html += ".row{display:flex;align-items:center;gap:12px;margin:8px 0}";
+  html += "input[type=range]{width:100%}";
+  html += "button{padding:6px 10px;border:1px solid #888;border-radius:6px;background:#fafafa;cursor:pointer}";
+  html += "button:hover{background:#f0f0f0}";
+  html += ".hint{color:#666;font-size:12px}";
+  html += "input[type=text],input[type=number],input[type=password]{padding:6px;border:1px solid #ccc;border-radius:6px}";
+  html += "label>input{margin-left:6px}";
+  html += "</style></head><body>";
+  html += "<h1>ESP8266 开关控制与配置 <span class='hint' id='devLabel'></span></h1>";
+
+  // 设备信息卡片
+  html += "<div class='card'>";
+  html += "<div class='row'><strong>设备信息</strong></div>";
+  html += "<div class='row'>";
+  html += "<label>设备名称<input type='text' id='devName' placeholder='例如：客厅灯'></label>";
+  html += "<label>设备类型<input type='text' id='devType' placeholder='switch'></label>";
+  html += "<button onclick=\"setDevice()\">保存设备信息</button>";
+  html += "</div>";
+  html += "<div class='hint'>说明：设备名用于路由器和 mDNS 显示（http://设备名.local）。</div>";
+  html += "</div>";
+
+  // WiFi 配置卡片
+  html += "<div class='card'>";
+  html += "<div class='row'><strong>WiFi 配置</strong></div>";
+  html += "<div class='row'>";
+  html += "<label>SSID<input type='text' id='cfgSsid' placeholder='WiFi 名称'></label>";
+  html += "<label>密码<input type='password' id='cfgPass' placeholder='WiFi 密码'></label>";
+  html += "<button onclick=\"setWifi()\">保存并连接</button>";
+  html += "</div>";
+  html += "<div class='row'><div class='hint'>当前连接：<span id='wifiSsid'>-</span>；强度：<span id='wifiRssi'>-</span> dBm</div></div>";
+  html += "</div>";
+
+  // MQTT 配置卡片
+  html += "<div class='card'>";
+  html += "<div class='row'><strong>MQTT 配置</strong></div>";
+  html += "<div class='row'>";
+  html += "<label>主机<input type='text' id='cfgMqttHost' placeholder='例如 192.168.1.10'></label>";
+  html += "<label>端口<input type='number' id='cfgMqttPort' min='1' max='65535' value='1883' style='width:100px'></label>";
+  html += "</div>";
+  html += "<div class='row'>";
+  html += "<label>用户<input type='text' id='cfgMqttUser'></label>";
+  html += "<label>密码<input type='password' id='cfgMqttPass' placeholder='不显示'></label>";
+  html += "<button onclick=\"setMqtt()\">保存并连接</button>";
+  html += "</div>";
+  html += "<div class='row'><strong>MQTT 主题</strong></div>";
+  html += "<div class='row'><div class='hint'>前缀：<code id='mqttRoot'></code></div></div>";
+  html += "<div class='row'><div class='hint'>在线状态：<code id='mqttStatus'></code></div></div>";
+  html += "<div class='row'><div class='hint'>全量状态：<code id='mqttState'></code></div></div>";
+  html += "<div class='row'><div class='hint'>控制命令：<code id='mqttCmd'></code></div></div>";
+  html += "<div class='row'><button onclick=\"sendHa()\">重发 HA 自动发现</button><button onclick=\"sendHaClearAll()\" style='margin-left:8px'>清理自动发现（设备及全部实体）</button><span class='hint'>将删除该设备在 Home Assistant 的所有已发现实体。</span></div>";
+  html += "</div>";
+
+  // 通道控制卡片
+  html += "<div class='card'>";
+  html += "<div class='row'><strong>通道控制</strong></div>";
   for (int i = 0; i < NUM_CHANNELS; i++) {
     html += "<div class='row'><b>通道 ";
     html += String(i);
@@ -866,6 +914,47 @@ String buildHtml() {
     html += "<button onclick=\"setOn(" + String(i) + ")\">开</button>";
     html += "<button onclick=\"setOff(" + String(i) + ")\">关</button></div>";
   }
+  html += "<div class='row'><label><input type='checkbox' id='curtain'";
+  if (curtainMode) html += " checked";
+  html += " onchange=\"setCurtain(this.checked)\">窗帘互斥模式</label></div>";
+  html += "<div id='status' class='hint'>载入中...</div>";
+  html += "</div>";
+
+  // LED 指示卡片
+  html += "<div class='card'>";
+  html += "<div class='row'><strong>LED 指示配置</strong></div>";
+  html += "<div class='row'>";
+  html += "<label>打开颜色<input type='color' id='ledColor' onchange=\"setLed()\"></label>";
+  html += "<label>亮度<input type='range' id='ledBright' min='0' max='255' step='1' oninput=\"setLed()\"></label>";
+  html += "<code id='ledBrightVal' class='hint'>0</code>";
+  html += "</div>";
+  html += "<div class='row'>";
+  html += "<label>关闭颜色<input type='color' id='ledOffColor' onchange=\"setLedOff()\"></label>";
+  html += "<label>亮度<input type='range' id='ledOffBright' min='0' max='255' step='1' oninput=\"setLedOff()\"></label>";
+  html += "<code id='ledOffBrightVal' class='hint'>0</code>";
+  html += "</div>";
+  html += "</div>";
+
+  // Daytime 与照度卡片
+  html += "<div class='card'>";
+  html += "<div class='row'><strong>白天阈值与照度</strong></div>";
+  html += "<div class='row'>";
+  html += "<label>白天阈值<input type='number' id='cfgDaytime' style='width:100px' min='0' max='2000' step='1'></label>";
+  html += "<button onclick=\"setDaytime()\">保存Daytime</button>";
+  html += "<span class='hint' style='margin-left:12px'>最近照度：<code id='illumValue'>未知</code></span>";
+  html += "</div>";
+  html += "</div>";
+
+  // OTA 升级卡片
+  html += "<div class='card'>";
+  html += "<div class='row'><strong>OTA 升级</strong></div>";
+  html += "<div class='row'>";
+  html += "<label>固件文件<input type='file' id='otaFile' accept='.bin'></label>";
+  html += "<button style='margin-left:8px' onclick=\"doOta()\">开始升级</button>";
+  html += "<span class='hint'>选择编译生成的 .bin 固件文件</span>";
+  html += "</div>";
+  html += "</div>";
+
   html += "<script>";
   html += "function refresh(){fetch('/api/state').then(r=>r.json()).then(j=>{var ae=(document.activeElement&&document.activeElement.id)||'';document.getElementById('status').innerText='状态: '+j.states.join(', ')+' | 互斥: '+(j.curtain?'开':'关');var el=document.getElementById('curtain');if(el){el.checked=j.curtain;}var dn=document.getElementById('devName');var dt=document.getElementById('devType');if(dn&&j.name&&ae!=='devName'){dn.value=j.name;}if(dt&&j.type&&ae!=='devType'){dt.value=j.type;}var mr=document.getElementById('mqttRoot');if(mr&&j.mqttRoot){mr.innerText=j.mqttRoot;}var ts=document.getElementById('mqttStatus');var st=document.getElementById('mqttState');var cm=document.getElementById('mqttCmd');if(j.topics){if(ts&&j.topics.status){ts.innerText=j.topics.status;}if(st&&j.topics.state){st.innerText=j.topics.state;}if(cm&&j.topics.cmd){cm.innerText=j.topics.cmd;}}else{if(ts&&j.mqttRoot){ts.innerText=j.mqttRoot+'/status';}if(st&&j.mqttRoot){st.innerText=j.mqttRoot+'/state';}if(cm&&j.mqttRoot){cm.innerText=j.mqttRoot+'/cmd';}}var ws=document.getElementById('wifiSsid');var wr=document.getElementById('wifiRssi');if(ws&&j.wifi&&j.wifi.ssid){ws.innerText=j.wifi.ssid;}if(wr&&j.wifi&&typeof j.wifi.rssi!=='undefined'){wr.innerText=j.wifi.rssi;}var mh=document.getElementById('cfgMqttHost');var mp=document.getElementById('cfgMqttPort');var mu=document.getElementById('cfgMqttUser');if(mh&&j.mqtt&&j.mqtt.host&&ae!=='cfgMqttHost'){mh.value=j.mqtt.host;}if(mp&&j.mqtt&&typeof j.mqtt.port!=='undefined'&&ae!=='cfgMqttPort'){mp.value=j.mqtt.port;}if(mu&&j.mqtt&&typeof j.mqtt.user!=='undefined'&&ae!=='cfgMqttUser'){mu.value=j.mqtt.user;}var lc=document.getElementById('ledColor');var lb=document.getElementById('ledBright');var lo=document.getElementById('ledOffColor');var lob=document.getElementById('ledOffBright');if(lc&&j.led&&j.led.color&&ae!=='ledColor'){lc.value=j.led.color;}if(lb&&j.led&&typeof j.led.brightness!=='undefined'&&ae!=='ledBright'){lb.value=j.led.brightness;}if(lo&&j.led&&j.led.offColor&&ae!=='ledOffColor'){lo.value=j.led.offColor;}if(lob&&j.led&&typeof j.led.offBrightness!=='undefined'&&ae!=='ledOffBright'){lob.value=j.led.offBrightness;}syncBrightness();});}";
   html += "function toggle(ch){fetch('/api/toggle?ch='+ch).then(()=>refresh());}";
@@ -876,6 +965,7 @@ String buildHtml() {
   html += "function setDevice(){var n=document.getElementById('devName').value;var t=document.getElementById('devType').value;fetch('/api/device?name='+encodeURIComponent(n)+'&type='+encodeURIComponent(t)).then(()=>refresh());}";
   html += "function setCurtain(v){fetch('/api/mode?curtain='+(v?1:0)).then(()=>refresh());}";
   html += "function sendHa(){fetch('/api/ha_discovery').then(()=>refresh());}";
+  html += "function sendHaClearAll(){fetch('/api/ha_discovery?reset=1').then(()=>{alert('已请求清理自动发现（设备及全部实体）');}).catch(e=>alert('请求失败: '+e));}";
   html += "function setMqtt(){var h=document.getElementById('cfgMqttHost').value;var p=document.getElementById('cfgMqttPort').value;var u=document.getElementById('cfgMqttUser').value;var pw=document.getElementById('cfgMqttPass').value;fetch('/api/mqtt_config?host='+encodeURIComponent(h)+'&port='+encodeURIComponent(p)+'&user='+encodeURIComponent(u)+'&pass='+encodeURIComponent(pw)).then(()=>setTimeout(refresh,800));}";
   html += "function setWifi(){var s=document.getElementById('cfgSsid').value;var p=document.getElementById('cfgPass').value;fetch('/api/wifi_config?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p)).then(()=>setTimeout(refresh,800));}";
   html += "function setDaytime(){var d=document.getElementById('cfgDaytime').value;fetch('/api/daytime?value='+encodeURIComponent(d)).then(()=>refresh());}";
@@ -1293,6 +1383,15 @@ void loop() {
 
 // 手动发布 Home Assistant 自动发现配置
 void handlePublishHa() {
+  if (server.hasArg("reset")) {
+    String v = server.arg("reset");
+    int r = v.toInt();
+    if (r != 0) {
+      clearHaDiscovery();
+      server.send(200, "application/json", "{\"ok\":true,\"reset\":true}");
+      return;
+    }
+  }
   publishHaDiscovery();
   mqttPublishFullState();
   server.send(200, "application/json", "{\"ok\":true}");

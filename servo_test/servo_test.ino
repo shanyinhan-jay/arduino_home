@@ -51,6 +51,9 @@ void handlePublishHa();
 void clearHaDiscovery();
 void clearHaDiscoveryCombo(const String &name);
 void handleHaClearCombo();
+void handleOtaUpload();
+void handleOtaDone();
+void renderConnectivityLed();
 void mqttSetup();
 void handleSetMqtt();
 void handleSetDevice();
@@ -105,6 +108,13 @@ struct ServoConfig {
   uint16_t checksum;
 };
 ServoConfig gCfg;
+
+// 连接指示灯（GPIO2 / D4），NodeMCU 内置 LED 为低电平点亮
+static const int LED_PIN = 2;
+static const bool LED_ACTIVE_LOW = true;
+bool otaInProgress = false;
+unsigned long ledLastToggleMs = 0;
+bool ledState = false;
 
 uint16_t cfgChecksum(const ServoConfig &c){
 uint32_t s=0; s+=c.magic; s+=c.version; s+=c.mqttPort; s+=c.minPulse; s+=c.maxPulse;
@@ -248,6 +258,15 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
       <button onclick="sendHa()">重发 HA 自动发现</button>
       <button onclick="sendHaClearAll()" style="margin-left:8px">清理自动发现（设备及全部实体）</button>
       <span class="hint">将删除该设备在 Home Assistant 的所有已发现实体。</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row"><strong>OTA 升级</strong></div>
+    <div class="row" style="flex-direction:column;align-items:flex-start">
+      <input id="otaFile" type="file" accept=".bin,.bin.gz">
+      <button onclick="doOta()" style="margin-top:8px">上传固件并升级</button>
+      <div class="hint">选择由 Arduino 编译生成的固件 .bin 文件，上传后设备会自动重启。</div>
     </div>
   </div>
 
@@ -461,6 +480,23 @@ static const char INDEX_HTML[] PROGMEM = R"=====(
       .then(()=>{ alert('已清理动作发现：'+name); refresh(); })
       .catch((e)=>{ console.error(e); alert('清理动作发现失败：'+name); });
   }
+  function doOta(){
+    const fEl = document.getElementById('otaFile');
+    const f = fEl && fEl.files && fEl.files[0];
+    if(!f){ alert('请选择固件文件(.bin)'); return; }
+    const fd = new FormData();
+    fd.append('firmware', f, f.name);
+    fetch('/api/ota', { method:'POST', body:fd })
+      .then(r=>r.text())
+      .then(t=>{
+        try{
+          const j = JSON.parse(t);
+          alert(j.ok ? '升级完成，设备将重启' : ('升级失败: '+(j.error||t)));
+        }catch(e){ alert(t); }
+        setTimeout(()=>refresh(), 3000);
+      })
+      .catch(e=>{ alert('上传失败: '+e); });
+  }
   function refreshCombos(){
     fetch('/api/combo_list').then(r=>r.json()).then(j=>{
       const list = j.combos || [];
@@ -618,6 +654,9 @@ void setup() {
   Serial.println("ESP8266 Servo + Web UI on GPIO5 (D1)");
   Serial.println("- 舵机信号线接 D1(GPIO5)");
   Serial.println("- 若未连接路由器，将开启 AP 'esp-servo-setup' 配网，访问 http://192.168.4.1/");
+  // 初始化连接指示灯：默认熄灭
+  pinMode(LED_PIN, OUTPUT);
+  if(LED_ACTIVE_LOW) digitalWrite(LED_PIN, HIGH); else digitalWrite(LED_PIN, LOW);
 
   // 舵机初始化
   servo.attach(SERVO_PIN, minPulseUs, maxPulseUs);
@@ -661,6 +700,7 @@ void setup() {
   server.on("/api/combo_list", HTTP_GET, handleGetCombos);
   server.on("/api/combo_save", HTTP_GET, handleSaveCombo);
   server.on("/api/combo_delete", HTTP_GET, handleDeleteCombo);
+  server.on("/api/ota", HTTP_POST, handleOtaDone, handleOtaUpload);
   server.onNotFound([](){
     Serial.print("[HTTP] 404: "); Serial.println(server.uri());
     server.send(404, "text/plain", "Not Found");
@@ -679,6 +719,7 @@ void loop() {
   server.handleClient();
   mqttClient.loop();
   mqttEnsureConnected();
+  renderConnectivityLed();
 
   // 读取串口输入（整数角度 0..180）
   static String buf;
@@ -737,6 +778,72 @@ void loop() {
       lastAngle = angle;
       mqttPublishState();
     }
+  }
+}
+
+// 连接指示灯渲染逻辑（GPIO2）：
+// - WiFi 断开：快闪
+// - WiFi 连接但 MQTT 未连接：慢闪
+// - MQTT 连接：熄灭
+static inline void ledSet(bool on){ if(LED_ACTIVE_LOW) digitalWrite(LED_PIN, on?LOW:HIGH); else digitalWrite(LED_PIN, on?HIGH:LOW); }
+void renderConnectivityLed(){
+  // OTA 进行中：优先展示较快闪烁，以便用户感知升级状态
+  unsigned long now = millis();
+  bool wifiOk = (WiFi.status() == WL_CONNECTED);
+  bool mqttOk = mqttClient.connected();
+  if(mqttOk){
+    ledSet(false);
+    return;
+  }
+  unsigned long interval = 0;
+  if(otaInProgress){
+    interval = 150; // OTA 加载时更快闪烁
+  } else if(wifiOk){
+    interval = 700; // 慢闪
+  } else {
+    interval = 200; // 快闪
+  }
+  if(now - ledLastToggleMs >= interval){
+    ledLastToggleMs = now;
+    ledState = !ledState;
+    ledSet(ledState);
+  }
+}
+
+// ======================= OTA 上传处理 =======================
+void handleOtaUpload(){
+  HTTPUpload &upload = server.upload();
+  if(upload.status == UPLOAD_FILE_START){
+    Serial.printf("OTA Start: %s\n", upload.filename.c_str());
+    otaInProgress = true;
+    renderConnectivityLed();
+    size_t sketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+    if(!Update.begin(sketchSpace)){
+      Update.printError(Serial);
+    }
+  } else if(upload.status == UPLOAD_FILE_WRITE){
+    if(Update.write(upload.buf, upload.currentSize) != upload.currentSize){
+      Update.printError(Serial);
+    }
+    renderConnectivityLed();
+  } else if(upload.status == UPLOAD_FILE_END){
+    if(Update.end(true)){
+      Serial.printf("OTA Success: %u bytes\n", upload.totalSize);
+    } else {
+      Update.printError(Serial);
+    }
+    renderConnectivityLed();
+  }
+  yield();
+}
+void handleOtaDone(){
+  bool ok = !Update.hasError();
+  otaInProgress = false;
+  String resp = ok ? "{\"ok\":true,\"msg\":\"update success, rebooting\"}" : "{\"ok\":false,\"error\":\"update failed\"}";
+  server.send(200, "application/json", resp);
+  if(ok){
+    delay(300);
+    ESP.restart();
   }
 }
 
