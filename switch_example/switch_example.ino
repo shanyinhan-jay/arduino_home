@@ -266,7 +266,7 @@ bool loadLedConfig() {
     gLedCfg = migrated;
     applyLedConfigToRuntime(gLedCfg);
     eepLoadOk = true;
-    Serial.println("EEPROM soft-migrated v3->v4 and applied.");
+    Serial.println(F("EEPROM soft-migrated v3->v4 and applied."));
     return true;
   }
   eepLoadOk = false;
@@ -482,7 +482,7 @@ void mqttOnMessage(char* topic, byte* payload, unsigned int length) {
       String p; p.reserve(length + 1);
       for (unsigned int i = 0; i < length; i++) p += (char)payload[i];
       p.trim(); p.toLowerCase();
-      Serial.print("MQTT cmd ch="); Serial.print(ch); Serial.print(" payload="); Serial.println(p);
+      Serial.print(F("MQTT cmd ch=")); Serial.print(ch); Serial.print(F(" payload=")); Serial.println(p);
       if (p == "on") {
         setRelayState(ch, true);
       } else if (p == "off") {
@@ -608,11 +608,11 @@ void mqttOnMessage(char* topic, byte* payload, unsigned int length) {
     double v = p.toFloat();
     long iv = (long)v;
     illuminationValue = iv;
-    Serial.print("Illumination updated: "); Serial.println(illuminationValue);
+    Serial.print(F("Illumination updated: ")); Serial.println(illuminationValue);
     updateLedStates();
     return;
   }
-  Serial.print("MQTT msg "); Serial.print(topic); Serial.print(" len="); Serial.println(length);
+  Serial.print(F("MQTT msg ")); Serial.print(topic); Serial.print(F(" len=")); Serial.println(length);
 }
 
 void mqttSetup() {
@@ -652,9 +652,9 @@ void mqttEnsureConnected() {
         mqttClient.subscribe(daytimeCmd.c_str());
         // 订阅照度传感器主题
         mqttClient.subscribe(SENSOR_ILLUM_TOPIC);
-        Serial.print("MQTT subscribed: "); Serial.println(cmdTopic);
-        Serial.print("MQTT subscribed sensor: "); Serial.println(SENSOR_ILLUM_TOPIC);
-        Serial.println("MQTT connected");
+        Serial.print(F("MQTT subscribed: ")); Serial.println(cmdTopic);
+        Serial.print(F("MQTT subscribed sensor: ")); Serial.println(SENSOR_ILLUM_TOPIC);
+        Serial.println(F("MQTT connected"));
         // 仅手动触发 HA 发现，不在连接时自动发送
         mqttPublishFullState();
         // MQTT 已连接，恢复 LED 按开关状态正常渲染
@@ -671,7 +671,7 @@ void mqttEnsureConnected() {
         String daytimeStr = String((unsigned)daytimeThreshold);
         mqttClient.publish(daytimeSt.c_str(), daytimeStr.c_str(), true);
       } else {
-        Serial.print("MQTT connect failed, rc=");
+        Serial.print(F("MQTT connect failed, rc="));
         Serial.println(mqttClient.state());
       }
     }
@@ -685,6 +685,7 @@ void mqttPublishFullState() {
   char onHex[10]; snprintf(onHex, sizeof(onHex), "#%02X%02X%02X", ledOnR, ledOnG, ledOnB);
   char offHex[10]; snprintf(offHex, sizeof(offHex), "#%02X%02X%02X", ledOffR, ledOffG, ledOffB);
   String payload = "{";
+  payload.reserve(512);
   payload += "\"name\":\""; payload += deviceName; payload += "\",";
   payload += "\"type\":\""; payload += deviceType; payload += "\",";
   payload += "\"mac\":\""; payload += deviceMacNoColon; payload += "\",";
@@ -709,6 +710,7 @@ void publishHaDiscovery() {
     String objId = String("ch") + String(i);
     String cfgTopic = String("homeassistant/switch/") + nodeId + "/" + objId + "/config";
     String cfg = "{\"~\":\"" + mqttRootTopic + "\",";
+    cfg.reserve(512);
     cfg += "\"name\":\"" + deviceName + " CH " + String(i + 1) + "\",";
     cfg += "\"uniq_id\":\"" + deviceMacNoColon + "-ch" + String(i) + "\",";
     cfg += "\"stat_t\":\"~/state\",";
@@ -724,6 +726,7 @@ void publishHaDiscovery() {
   {
     String cfgTopic = String("homeassistant/light/") + nodeId + "/led_on/config";
     String cfg = "{\"~\":\"" + mqttRootTopic + "\",";
+    cfg.reserve(512);
     cfg += "\"name\":\"" + deviceName + " LED On\",";
     cfg += "\"uniq_id\":\"" + deviceMacNoColon + "-led-on\",";
     cfg += "\"schema\":\"json\",";
@@ -739,6 +742,7 @@ void publishHaDiscovery() {
   {
     String cfgTopic = String("homeassistant/light/") + nodeId + "/led_off/config";
     String cfg = "{\"~\":\"" + mqttRootTopic + "\",";
+    cfg.reserve(512);
     cfg += "\"name\":\"" + deviceName + " LED Off\",";
     cfg += "\"uniq_id\":\"" + deviceMacNoColon + "-led-off\",";
     cfg += "\"schema\":\"json\",";
@@ -755,6 +759,7 @@ void publishHaDiscovery() {
   {
     String cfgTopic = String("homeassistant/number/") + nodeId + "/daytime/config";
     String cfg = "{\"~\":\"" + mqttRootTopic + "\",";
+    cfg.reserve(512);
     cfg += "\"name\":\"" + deviceName + " Daytime 阈值\",";
     cfg += "\"uniq_id\":\"" + deviceMacNoColon + "-daytime\",";
     cfg += "\"cmd_t\":\"~/daytime/set\",";
@@ -824,16 +829,16 @@ void connectWiFi() {
     // 避免阻塞期间触发硬件看门狗复位
     ESP.wdtFeed();
     yield();
-    Serial.print(".");
+    Serial.print(F("."));
   }
   Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("WiFi connected, IP: ");
+    Serial.print(F("WiFi connected, IP: "));
     Serial.println(WiFi.localIP());
-    Serial.print("DHCP hostname: "); Serial.println(hn);
+    Serial.print(F("DHCP hostname: ")); Serial.println(hn);
     apMode = false;
   } else {
-    Serial.println("WiFi connect failed, starting AP for config...");
+    Serial.println(F("WiFi connect failed, starting AP for config..."));
     // 启动 AP 以便手机/电脑连接配置 WiFi
     String apSsid = sanitizeId(deviceName, 24);
     if (apSsid.length() == 0) apSsid = "esp-switch";
@@ -841,12 +846,13 @@ void connectWiFi() {
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(apSsid.c_str());
     apMode = true;
-    Serial.print("AP SSID: "); Serial.println(apSsid);
+    Serial.print(F("AP SSID: ")); Serial.println(apSsid);
   }
 }
 
 String buildHtml() {
   String html = "<!doctype html><html><head><meta charset='utf-8'>";
+  html.reserve(6000);
   html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
   html += "<title>ESP8266 开关控制与配置</title>";
   html += "<style>";
@@ -944,6 +950,7 @@ String buildHtml() {
   html += "<label>白天阈值<input type='number' id='cfgDaytime' style='width:100px' min='0' max='2000' step='1'></label>";
   html += "<button onclick=\"setDaytime()\">保存Daytime</button>";
   html += "<span class='hint' style='margin-left:12px'>最近照度：<code id='illumValue'>未知</code></span>";
+  html += "<div class='hint' style='margin-left:12px;margin-top:6px'>照度订阅主题：<code id='illumTopic'></code></div>";
   html += "</div>";
   html += "</div>";
 
@@ -973,7 +980,7 @@ String buildHtml() {
   html += "function setDaytime(){var d=document.getElementById('cfgDaytime').value;fetch('/api/daytime?value='+encodeURIComponent(d)).then(()=>refresh());}";
   html += "function syncBrightness(){var b=document.getElementById('ledBright');var bv=document.getElementById('ledBrightVal');var ob=document.getElementById('ledOffBright');var obv=document.getElementById('ledOffBrightVal');if(b&&bv){bv.innerText=b.value;}if(ob&&obv){obv.innerText=ob.value;}}";
   html += "function doOta(){var f=document.getElementById('otaFile').files[0];if(!f){alert('请选择固件文件(.bin)');return;}var fd=new FormData();fd.append('firmware',f,f.name);fetch('/api/ota',{method:'POST',body:fd}).then(r=>r.text()).then(t=>{try{var j=JSON.parse(t);alert(j.ok?'升级完成，设备将重启':'升级失败: '+(j.error||t));}catch(e){alert(t);}setTimeout(()=>refresh(),3000);}).catch(e=>alert('上传失败: '+e));}";
-  html += "function refreshIllum(){fetch('/api/state').then(r=>r.json()).then(j=>{var ae=(document.activeElement&&document.activeElement.id)||'';var dd=document.getElementById('cfgDaytime');if(dd&&typeof j.daytime!=='undefined'&&ae!=='cfgDaytime'){dd.value=j.daytime;}var iv=document.getElementById('illumValue');if(iv){iv.innerText=(typeof j.illum!=='undefined'&&j.illum>=0)?j.illum:'未知';}var d=j.debug; if(d){var de=document.getElementById('dbgEepSize'); if(de) de.innerText=d.eepSize; var dc=document.getElementById('dbgCfgSize'); if(dc) dc.innerText=d.cfgSize; var dm=document.getElementById('dbgMagic'); if(dm) dm.innerText='0x'+(Number(d.magic).toString(16)).toUpperCase(); var dv=document.getElementById('dbgVer'); if(dv) dv.innerText=d.version; var ds=document.getElementById('dbgChk'); if(ds) ds.innerText=d.checksum; var dl=document.getElementById('dbgCalc'); if(dl) dl.innerText=d.calc; var dk=document.getElementById('dbgLoad'); if(dk) dk.innerText=d.loadOk?'OK':'FAIL';}});}";
+  html += "function refreshIllum(){fetch('/api/state').then(r=>r.json()).then(j=>{var ae=(document.activeElement&&document.activeElement.id)||'';var dd=document.getElementById('cfgDaytime');if(dd&&typeof j.daytime!=='undefined'&&ae!=='cfgDaytime'){dd.value=j.daytime;}var iv=document.getElementById('illumValue');if(iv){iv.innerText=(typeof j.illum!=='undefined'&&j.illum>=0)?j.illum:'未知';}var it=document.getElementById('illumTopic');if(it){it.innerText=(j.illumTopic||'');}var d=j.debug; if(d){var de=document.getElementById('dbgEepSize'); if(de) de.innerText=d.eepSize; var dc=document.getElementById('dbgCfgSize'); if(dc) dc.innerText=d.cfgSize; var dm=document.getElementById('dbgMagic'); if(dm) dm.innerText='0x'+(Number(d.magic).toString(16)).toUpperCase(); var dv=document.getElementById('dbgVer'); if(dv) dv.innerText=d.version; var ds=document.getElementById('dbgChk'); if(ds) ds.innerText=d.checksum; var dl=document.getElementById('dbgCalc'); if(dl) dl.innerText=d.calc; var dk=document.getElementById('dbgLoad'); if(dk) dk.innerText=d.loadOk?'OK':'FAIL';}});}";
   html += "setInterval(refreshIllum,2500);";
   html += "setInterval(refresh,2000);refresh();";
   html += "</script></body></html>";
@@ -986,6 +993,7 @@ void handleRoot() {
 
 void handleGetState() {
   String json = "{\"channels\":" + String(NUM_CHANNELS) + ",\"states\":[";
+  json.reserve(1024);
   for (int i = 0; i < NUM_CHANNELS; i++) {
     json += relayStates[i] ? "\"on\"" : "\"off\"";
     if (i < NUM_CHANNELS - 1) json += ",";
@@ -1021,6 +1029,7 @@ void handleGetState() {
   json += "\",\"offBrightness\":" + String(ledOffBrightness);
   json += "},\"daytime\":"; json += String(daytimeThreshold);
   json += ",\"illum\":"; json += String(illuminationValue);
+  json += ",\"illumTopic\":\""; json += SENSOR_ILLUM_TOPIC; json += "\"";
   // 调试对象：EEPROM 与配置加载信息
   json += ",\"debug\":{\"eepSize\":"; json += String(EEPROM_SIZE);
   json += ",\"cfgSize\":"; json += String(sizeof(LedConfig));
@@ -1105,6 +1114,12 @@ void handleSetLed() {
   if (changed) updateLedStates();
   if (changed) saveLedConfig();
   if (changed) mqttPublishFullState();
+  // 同步到 HA 的 LED On 独立状态主题
+  if (changed && mqttClient.connected()) {
+    String stTopic = mqttRootTopic + "/led_on/state";
+    String json = String("{\"state\":\"ON\",\"brightness\":") + String((int)ledOnBrightness) + ",\"color_mode\":\"rgb\",\"color\":{\"r\":" + String((int)ledOnR) + ",\"g\":" + String((int)ledOnG) + ",\"b\":" + String((int)ledOnB) + "}}";
+    mqttClient.publish(stTopic.c_str(), json.c_str(), true);
+  }
   char hexbuf[10];
   snprintf(hexbuf, sizeof(hexbuf), "#%02X%02X%02X", ledOnR, ledOnG, ledOnB);
   String resp = String("{\"ok\":true,\"color\":\"") + String(hexbuf) + "\",\"brightness\":" + String(ledOnBrightness) + "}";
@@ -1124,6 +1139,12 @@ void handleSetLedOff() {
   updateLedStates();
   saveLedConfig();
   mqttPublishFullState();
+  // 同步到 HA 的 LED Off 独立状态主题
+  if (mqttClient.connected()) {
+    String stTopic = mqttRootTopic + "/led_off/state";
+    String json = String("{\"state\":\"ON\",\"brightness\":") + String((int)ledOffBrightness) + ",\"color_mode\":\"rgb\",\"color\":{\"r\":" + String((int)ledOffR) + ",\"g\":" + String((int)ledOffG) + ",\"b\":" + String((int)ledOffB) + "}}";
+    mqttClient.publish(stTopic.c_str(), json.c_str(), true);
+  }
   char hexbuf[10];
   snprintf(hexbuf, sizeof(hexbuf), "#%02X%02X%02X", ledOffR, ledOffG, ledOffB);
   String resp = String("{\"ok\":true,\"offColor\":\"") + String(hexbuf) + "\",\"offBrightness\":" + String(ledOffBrightness) + "}";
@@ -1231,7 +1252,7 @@ void handleSetDevice() {
     String mdnsHost = hn; mdnsHost.toLowerCase();
     if (MDNS.begin(mdnsHost.c_str())) {
       MDNS.addService("http", "tcp", 80);
-      Serial.print("mDNS: http://"); Serial.print(mdnsHost); Serial.println(".local");
+      Serial.print(F("mDNS: http://")); Serial.print(mdnsHost); Serial.println(F(".local"));
     }
     if (mqttClient.connected()) mqttClient.disconnect();
     mqttEnsureConnected();
@@ -1274,10 +1295,10 @@ void setup() {
   // 初始化 EEPROM 并加载 LED 配置
   EEPROM.begin(EEPROM_SIZE);
   if (loadLedConfig()) {
-    Serial.println("EEPROM: LED config loaded");
+    Serial.println(F("EEPROM: LED config loaded"));
   } else {
     saveLedConfig();
-    Serial.println("EEPROM: LED config initialized");
+    Serial.println(F("EEPROM: LED config initialized"));
   }
 
   // 连接 WiFi 与启动 WebServer
@@ -1310,9 +1331,9 @@ void setup() {
   if (mdnsHost.length() == 0) mdnsHost = "esp-switch";
   if (MDNS.begin(mdnsHost.c_str())) {
     MDNS.addService("http", "tcp", 80);
-    Serial.print("mDNS: http://"); Serial.print(mdnsHost); Serial.println(".local");
+    Serial.print(F("mDNS: http://")); Serial.print(mdnsHost); Serial.println(F(".local"));
   } else {
-    Serial.println("mDNS start failed");
+    Serial.println(F("mDNS start failed"));
   }
 
   updateLedStates();
@@ -1411,7 +1432,7 @@ void maintainWiFiConnectivity() {
     if (apMode) {
       WiFi.softAPdisconnect(true);
       apMode = false;
-      Serial.println("WiFi reconnected, AP closed");
+      Serial.println(F("WiFi reconnected, AP closed"));
     }
     wifiLostSinceMs = 0;
     return;
@@ -1420,7 +1441,7 @@ void maintainWiFiConnectivity() {
   // 断线：记录首次断线时间并尝试重连
   if (wifiLostSinceMs == 0) {
     wifiLostSinceMs = now;
-    Serial.println("WiFi lost, attempting reconnect...");
+    Serial.println(F("WiFi lost, attempting reconnect..."));
     WiFi.reconnect();
     return;
   }
@@ -1433,7 +1454,7 @@ void maintainWiFiConnectivity() {
     WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(apSsid.c_str());
     apMode = true;
-    Serial.print("AP started for setup, SSID: "); Serial.println(apSsid);
+    Serial.print(F("AP started for setup, SSID: ")); Serial.println(apSsid);
   }
 }
 
